@@ -62,7 +62,14 @@ type Container struct {
 	// forward the port on 0.0.0.0 automatically.
 	PortForwards map[int]int
 
-	id string // the container id
+	// WaitForExit runs this container until it exits. Helpful for scenarios where a container operates
+	// on another (example: initialize database data), but does not expose a service.
+	WaitForExit bool
+
+	id       string          // the container id
+	events   []*dc.APIEvents // list of events recieved for this container
+	exitCode *int            // container exit code
+	done     chan struct{}   // channel to wait on for exit
 }
 
 // Manifest is the containers to run, in order. Passed to New().
@@ -71,17 +78,22 @@ type Manifest []*Container
 // Composer is the interface to launching manifests. This is returned from
 // New()
 type Composer struct {
-	manifest  Manifest
-	options   Options
-	netID     string
-	sigCancel context.CancelFunc
+	manifest    Manifest
+	options     Options
+	netID       string
+	sigCancel   context.CancelFunc
+	eventStream chan *dc.APIEvents
 }
 
 // New constructs a new Composer from a Manifest. A network name must also be
 // provided; it will be created and cleaned up when Run and Teardown are
 // called.
 func New(manifest Manifest, options Options) *Composer {
-	return &Composer{manifest: manifest, options: options}
+	return &Composer{
+		manifest:    manifest,
+		options:     options,
+		eventStream: make(chan *dc.APIEvents, 10),
+	}
 }
 
 // Options is a generic type for options.
@@ -129,6 +141,20 @@ func (c *Composer) HandleSignals(forward bool) {
 	}()
 
 	signal.Notify(sigChan, unix.SIGINT, unix.SIGTERM)
+}
+
+func (c *Composer) handleDockerEvents() {
+	for ev := range c.eventStream {
+
+		for _, cont := range c.manifest {
+
+			// just dispatch to the container
+			if ev.ID == cont.id {
+				cont.onEvent(ev)
+				break
+			}
+		}
+	}
 }
 
 // GetNetworkID returns the network identifier of the created network from
@@ -246,7 +272,16 @@ func (c *Composer) Launch(ctx context.Context) error {
 			time.Sleep(cont.BootWait)
 		}
 
-		if cont.AliveFunc != nil {
+		if cont.WaitForExit {
+			// wait for the container to reach exited state
+			<-cont.done
+
+			if cInfo, err := client.InspectContainer(cont.id); err != nil {
+				log.Printf("Failed to inspect container: %v", cont.Name)
+			} else {
+				cont.exitCode = &cInfo.State.ExitCode
+			}
+		} else if cont.AliveFunc != nil {
 			log.Printf("Running aliveFunc for %v", cont.Name)
 			if err := cont.AliveFunc(ctx, client, cont.id); err != nil {
 				c.Teardown(ctx)
@@ -322,10 +357,18 @@ func (c *Composer) Teardown(ctx context.Context) error {
 				errs = true
 			}
 
-			log.Printf("Removing container: [%s]", cont.Name)
-			if err := client.RemoveContainer(dc.RemoveContainerOptions{ID: cont.id, Force: true, Context: ctx}); err != nil {
-				log.Println(err)
-				errs = true
+			if cont.WaitForExit {
+				// ensure the container actually exited.
+				if cont.exitCode == nil {
+					log.Printf("Container expected to exit but did not: [%s]", cont.Name)
+					errs = true
+				}
+			} else {
+				log.Printf("Removing container: [%s]", cont.Name)
+				if err := client.RemoveContainer(dc.RemoveContainerOptions{ID: cont.id, Force: true, Context: ctx}); err != nil {
+					log.Println(err)
+					errs = true
+				}
 			}
 		} else {
 			log.Printf("Skipping unstarted container: [%s]", cont.Name)
@@ -339,9 +382,25 @@ func (c *Composer) Teardown(ctx context.Context) error {
 		}
 	}
 
+	close(c.eventStream)
+
 	if errs {
 		return errors.New("there were errors (see log)")
 	}
 
 	return nil
+}
+
+// handle events.
+func (c *Container) onEvent(ev *dc.APIEvents) {
+
+	// add to the list
+	c.events = append(c.events, ev)
+
+	// created, restarting, running, removing, paused, exited, or dead
+	switch ev.Status {
+	case "exited":
+		close(c.done)
+	}
+
 }
