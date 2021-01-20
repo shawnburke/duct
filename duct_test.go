@@ -367,7 +367,6 @@ func TestLoggerOption(t *testing.T) {
 	}
 
 	logs := buffer.String()
-	t.Log(logs)
 	if len(logs) == 0 {
 		t.Fatal("Didn't capture logs")
 	}
@@ -402,9 +401,21 @@ func TestWaitForExit(t *testing.T) {
 		},
 	}, WithNewNetwork("duct-test-network"))
 
+	oldTarget := containerLogsTarget
+	defer func() {
+		containerLogsTarget = oldTarget
+	}()
+
+	buffer := &bytes.Buffer{}
+	containerLogsTarget = buffer
+
 	if err := c.Launch(context.Background()); err == nil {
 		t.Fatal("Expected error due to bad exit code, but none occurred")
 	}
 
+	logs := buffer.String()
+	if len(logs) == 0 {
+		t.Fatal("Didn't capture logs")
+	}
 
 }
