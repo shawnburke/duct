@@ -403,7 +403,7 @@ func TestWaitForExit(t *testing.T) {
 	}, WithNewNetwork("duct-test-network"))
 
 	if err := c.Launch(context.Background()); err == nil {
-		t.Fatal("Expected error due to bad exit code", err)
+		t.Fatal("Expected error due to bad exit code, but none occurred")
 	}
 
 
