@@ -109,6 +109,7 @@ const (
 	optionCreateNetwork   = "create_network"
 	optionExistingNetwork = "existing_network"
 	optionLogWriter       = "log_writer"
+	defaultNetworkName    = "default_network"
 )
 
 // WithNewNetwork creates a network for use with the manifest.
@@ -120,6 +121,11 @@ func WithNewNetwork(name string) Options {
 // network names are not unique!)
 func WithExistingNetwork(id string) Options {
 	return Options{optionExistingNetwork: id}
+}
+
+// WithDefaultNetwork uses the default docker network
+func WithDefaultNetwork() Options {
+	return WithExistingNetwork(defaultNetworkName)
 }
 
 // WithLogWriter routes all logging output to the specified writer, or to none
@@ -238,7 +244,8 @@ func (c *Composer) Launch(ctx context.Context) error {
 		}
 
 		log.Printf("Creating container: [%s]", cont.Name)
-		ctr, err := client.CreateContainer(dc.CreateContainerOptions{
+
+		containerConfig := dc.CreateContainerOptions{
 			Name: cont.Name,
 			Config: &dc.Config{
 				Hostname:     cont.Name,
@@ -252,16 +259,22 @@ func (c *Composer) Launch(ctx context.Context) error {
 				Mounts:       mounts,
 				PortBindings: bindings,
 			},
-			NetworkingConfig: &dc.NetworkingConfig{
+
+			Context: ctx,
+		}
+
+		if c.netID != defaultNetworkName {
+			containerConfig.NetworkingConfig = &dc.NetworkingConfig{
 				EndpointsConfig: map[string]*dc.EndpointConfig{
 					cont.Name: {
 						NetworkID: c.netID,
 						Aliases:   []string{cont.Name},
 					},
 				},
-			},
-			Context: ctx,
-		})
+			}
+		}
+
+		ctr, err := client.CreateContainer(containerConfig)
 		if err != nil {
 			c.Teardown(ctx)
 			return err
@@ -405,7 +418,7 @@ func (c *Composer) Teardown(ctx context.Context) error {
 		}
 	}
 
-	if c.options[optionCreateNetwork] != nil {
+	if c.options[optionCreateNetwork] != nil && c.netID != defaultNetworkName {
 		if err := client.RemoveNetwork(c.netID); err != nil {
 			log.Println(err)
 			errs = true

@@ -3,6 +3,7 @@ package duct
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -416,6 +417,43 @@ func TestWaitForExit(t *testing.T) {
 	logs := buffer.String()
 	if len(logs) == 0 {
 		t.Fatal("Didn't capture logs")
+	}
+
+}
+
+func TestDefaultNetwork(t *testing.T) {
+
+	nginxPort := 6001
+
+	c := New(Manifest{
+		{
+			Image: "nginx:latest",
+			AliveFunc: func(ctx context.Context, client *dc.Client, id string) error {
+				for {
+					conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", nginxPort))
+					if err != nil {
+						log.Printf("Error while dialing container: %v", err)
+						time.Sleep(100 * time.Millisecond)
+						continue
+					}
+					conn.Close()
+					return nil
+				}
+			},
+			PortForwards: map[int]int{
+				nginxPort: 80,
+			},
+		},
+	},
+		WithDefaultNetwork(),
+	)
+
+	if err := c.Launch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Teardown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 
 }
