@@ -68,6 +68,9 @@ type Container struct {
 	// on another (example: initialize database data), but does not expose a service.
 	WaitForExit bool
 
+	// Hook to modify container config
+	ModifyContainerConfig func(dc.CreateContainerOptions) dc.CreateContainerOptions
+
 	id       string // the container id
 	exitCode *int   // container exit code
 
@@ -272,6 +275,10 @@ func (c *Composer) Launch(ctx context.Context) error {
 					},
 				},
 			}
+		}
+
+		if cont.ModifyContainerConfig != nil {
+			containerConfig = cont.ModifyContainerConfig(containerConfig)
 		}
 
 		ctr, err := client.CreateContainer(containerConfig)
